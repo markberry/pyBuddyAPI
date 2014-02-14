@@ -9,12 +9,37 @@ TODO
 - add a delay action
 - add an alarm action for a set time
 - chase actions from one device to the next
-- allow devices to be reordered, AND that order saved to disck for reuse next time
+- allow devices to be reordered, AND that order saved to disk for reuse next time
 - allow for infinite sequences by having callback defined ones as well as queue driven ones
+
+- work with APIs other than pywinusb
 """
 
-class UsbDevices(list):
-    # List subclassing as decribed at http://stackoverflow.com/questions/8180014/how-to-subclass-python-list-without-type-problems
+
+# Constants for use in the api
+class Constants:
+
+    red = 6
+    green = 5
+    blue = 3
+    cyan = 1
+    magenta = 2
+    yellow = 4
+    white = 0
+    nothing = black = 7
+    
+    twain = 0 # both left and right, or push and pull
+    left = pull = 1
+    right = push = 2
+    neutral = rest = 3
+    
+    show = 0
+    hide = 1
+
+    colorInitials = "wcmbygrn"
+
+class UsbDevices(list, Constants):
+    # List subclassing as described at http://stackoverflow.com/questions/8180014/how-to-subclass-python-list-without-type-problems
     def __getslice__(self,i,j):
         return UsbDevices(list.__getslice__(self, i, j))
     def __add__(self,other):
@@ -62,12 +87,12 @@ class UsbDevices(list):
     def chase(self):
         limit = len(self)
         
-        colors = [self[0].white]
+        colors = [self.white]
         if limit > 2:
-            colors.append(self[0].cyan)
+            colors.append(self.cyan)
         if limit > 3:
-            colors.append(self[0].blue)
-        colors.append(self[0].black)
+            colors.append(self.blue)
+        colors.append(self.black)
         
         colorMask = self[0].colorMask
         colorShift = self[0].colorShift
@@ -140,7 +165,44 @@ class UsbDevices(list):
             device.discard()
         return self
 
-class usbapi:
+    def play(self, string, delay = 0.1):
+
+        when = time.time()
+
+        for c in string:
+            if self.colorInitials.find(c) != -1:
+                self.color(c)
+            elif c == '<':
+                # turn left
+                self.turn(self.left)
+            elif c == '>':
+                # turn right
+                self.turn(self.right)
+            elif c == 'v':
+                # pull wings in
+                self.flap(self.pull)
+            elif c == '^':
+                # push wings out
+                self.flap(self.push)
+            elif c == '!':
+                # show heart
+                self.heart(self.show)
+            elif c == '.':
+                # hide heart
+                self.heart(self.hide)
+            elif c == 'x':
+                # hide heart
+                self.reset()
+            elif c == ',':
+                # this is just a pause
+                pass
+
+            time.sleep(delay)
+
+        return self
+
+
+class usbapi(Constants):
     """Class for providing access to USB notifier type objects"""
 
 #    def __init__(self):
@@ -162,8 +224,9 @@ class usbapi:
                 
         self.devices = devices
         return self.devices
+
         
-class usbdevice:
+class usbdevice(Constants):
 
     def __init__(self, device):
     
@@ -184,6 +247,7 @@ class usbdevice:
         t = threading.Thread(target=self.worker, args=(self.queue,))
         t.daemon = True
         t.start()
+
         
     def __str__(self):
         color = (self.value & ~self.colorMask) >> self.colorShift
@@ -196,26 +260,12 @@ class usbdevice:
     def __repr__(self):
         return str(self)    
 
+
     colors = ['white', 'cyan', 'magenta', 'blue', 'yellow', 'green', 'red', 'nothing']
     flaps = ['flaps both', 'pull', 'push', '']
     turns = ['turn both', 'left', 'right', '']
     hearts = ['heart', '']
      
-    red = 6
-    green = 5
-    blue = 3
-    cyan = 1
-    magenta = 2
-    yellow = 4
-    white = 0
-    nothing = black = 7
-    
-    left = pull = 1
-    right = push = 2
-    neutral = rest = 3
-    
-    show = 0
-    hide = 1
     
     colorMask = 0x8f              
     colorShift = 4
@@ -255,7 +305,11 @@ class usbdevice:
     
     def color(self, color):
         """Set the color of the main indicator"""
-        color = color if (color <= 7 and color >= 0) else 7 if color > 7 else 0
+        # we can take the initial letter of a color - convert it to a number
+        if isinstance(color, basestring):
+            color = self.colorInitials.find(color)
+
+        color = sorted((0, color, 7))[1]
         self.value = (self.value & self.colorMask) + (color << self.colorShift)
         self.output()
         return self
@@ -269,8 +323,8 @@ class usbdevice:
         
     def turn(self, turn):
         """Turn the body"""
-        turn = turn if (turn <= 3 and turn >= 0) else 3 if turn > 3 else 0
-        if turn == 1 or turn == 2:
+        turn = sorted((self.twain, turn, self.neutral))[1]
+        if turn == self.left or turn == self.right:
             move = turn
         self.value = (self.value & self.turnMask) + (turn << self.turnShift)
         self.output()
@@ -278,7 +332,7 @@ class usbdevice:
         
     def flap(self, flap):
         """Move the wings"""
-        flap = flap if (flap <= 3 and flap >= 0) else 3 if flap > 3 else 0
+        flap = sorted((self.twain, flap, self.neutral))[1]
         self.value = (self.value & self.flapMask) + (flap << self.flapShift)
         self.output()
         return self
@@ -349,6 +403,16 @@ class usbdevice:
              pass
         return self
 
+    def play(self, string, delay = 0.1):
+        """Play a sequence of actions described in a string"""
+
+        devices = UsbDevices()
+        devices.append(self)
+        devices.play(string, delay)
+
+        return self
+
+
     # Internal helper actions    
     def sequence(self, number, delay, mask, shift, on = 0, off = 1):
         """Helper function"""
@@ -359,7 +423,7 @@ class usbdevice:
             self.queue.put((when, mask, off << shift))
             when += delay
         return self
-               
+
     # Private worker thread, not part of the api           
     def worker(self, queue):
         while True:
