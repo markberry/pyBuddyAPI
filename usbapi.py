@@ -165,9 +165,12 @@ class UsbDevices(list, Constants):
             device.discard()
         return self
 
-    def play(self, string, delay = 0.1):
+    def delay(self, delay):
+        for device in self:
+            device.delay(delay)
+        return self
 
-        when = time.time()
+    def play(self, string, delay = 0.1):
 
         for c in string:
             if self.colorInitials.find(c) != -1:
@@ -193,11 +196,26 @@ class UsbDevices(list, Constants):
             elif c == 'x':
                 # hide heart
                 self.reset()
+            elif c == 'd':
+                # dance
+                self.dance()
+            elif c == 'f':
+                # fly
+                self.fly()
+            elif c == 'z':
+                # buzz
+                self.buzz()
+            elif c == 'p':
+                # pulse
+                self.pulse()
             elif c == ',':
                 # this is just a pause
                 pass
+            elif c == '+':
+                # this gives no delay, so makes two actions happen at once
+                continue
 
-            time.sleep(delay)
+            self.delay(delay)
 
         return self
 
@@ -243,6 +261,8 @@ class usbdevice(Constants):
         self.queue = Queue.PriorityQueue()
             
         self.queue.device = self
+
+        self.when = 0
             
         t = threading.Thread(target=self.worker, args=(self.queue,))
         t.daemon = True
@@ -305,20 +325,20 @@ class usbdevice(Constants):
     
     def color(self, color):
         """Set the color of the main indicator"""
-        # we can take the initial letter of a color - convert it to a number
+
         if isinstance(color, basestring):
-            color = self.colorInitials.find(color)
+            # If color is passed as a string, we take its initial color as
+            # defining the color we want
+            color = self.colorInitials.find(color[0])
 
         color = sorted((0, color, 7))[1]
-        self.value = (self.value & self.colorMask) + (color << self.colorShift)
-        self.output()
+        self.add(self.colorMask, self.colorShift, color)
         return self
 
     def heart(self, heart):
         """Set the secondary (heart) indicator"""
         heart = 0 if heart == 0 else 1
-        self.value = (self.value & self.heartMask) + (heart << self.heartShift)
-        self.output()
+        self.add(self.heartMask, self.heartShift, heart)
         return self
         
     def turn(self, turn):
@@ -326,37 +346,29 @@ class usbdevice(Constants):
         turn = sorted((self.twain, turn, self.neutral))[1]
         if turn == self.left or turn == self.right:
             move = turn
-        self.value = (self.value & self.turnMask) + (turn << self.turnShift)
-        self.output()
+        self.add(self.turnMask, self.turnShift, turn)
         return self
         
     def flap(self, flap):
         """Move the wings"""
         flap = sorted((self.twain, flap, self.neutral))[1]
-        self.value = (self.value & self.flapMask) + (flap << self.flapShift)
-        self.output()
+        self.add(self.flapMask, self.flapShift, flap)
         return self
     
     def dance(self, number = 10, delay = 0.2):
         """Dance turning left and right"""
-        when = time.time()
-        for each in range(number):              
-            self.queue.put((when, self.turnMask, self.left << self.turnShift))
-            when += delay
-            self.queue.put((when, self.turnMask, self.right << self.turnShift))
-            when += delay
-        self.queue.put((when, self.turnMask, self.neutral << self.turnShift))
+        for each in range(number):
+            self.add(self.turnMask, self.turnShift, self.left, delay)
+            self.add(self.turnMask, self.turnShift, self.right, delay)
+        self.add(self.turnMask, self.turnShift, self.neutral)
         return self
         
     def fly(self, number = 10, delay = 0.1):
         """Flap the wings multiple times"""
-        when = time.time()
-        for each in range(number):              
-            self.queue.put((when, self.flapMask, self.pull << self.flapShift))
-            when += delay
-            self.queue.put((when, self.flapMask, self.push << self.flapShift))
-            when += delay
-        self.queue.put((when, self.flapMask, self.neutral << self.flapShift))
+        for each in range(number):
+            self.add(self.flapMask, self.flapShift, self.pull, delay)
+            self.add(self.flapMask, self.flapShift, self.push, delay)
+        self.add(self.flapMask, self.flapShift, self.neutral)
         return self
 
     def buzz(self, number = 30, delay = 0.02):
@@ -364,13 +376,10 @@ class usbdevice(Constants):
         # We try and not disturb the turn by turning back to the last move
         turn = self.move
 
-        when = time.time()
         for each in range(number):
-            self.queue.put((when, self.turnMask, turn << self.turnShift))
-            self.queue.put((when, self.turnMask, (turn  ^ 3) << self.turnShift))
-            when += delay
-            self.queue.put((when, self.turnMask, self.neutral << self.turnShift))
-            when += delay
+            self.add(self.turnMask, self.turnShift, turn)
+            self.add(self.turnMask, self.turnShift, turn  ^ 3, delay)
+            self.add(self.turnMask, self.turnShift, self.neutral, delay)
         return self
 
     def pulse(self, number = 30, delay = 0.1):
@@ -385,12 +394,15 @@ class usbdevice(Constants):
     def wait(self):
         """wait for all outstanding actions to complete"""
         self.queue.join()
-        return self        
+        return self
                
     def reset(self):
-        """Clears any queued items, and resets back to all off"""
+        """Instantly clears any queued items, and resets back to all off"""
         self.discard()
         self.output(0xff)
+
+        self.when = 0
+
         return self
         
     def discard(self):
@@ -412,17 +424,36 @@ class usbdevice(Constants):
 
         return self
 
+    def delay(self, delay):
+        """The next action will be delayed by this amount from the previous one"""
+        self.when += delay
+
+        return self
 
     # Internal helper actions    
     def sequence(self, number, delay, mask, shift, on = 0, off = 1):
         """Helper function"""
-        when = time.time()
         for each in range(number):
-            self.queue.put((when, mask, on << shift))
-            when += delay
-            self.queue.put((when, mask, off << shift))
-            when += delay
+            self.add(mask, shift, on, delay)
+            self.add(mask, shift, off, delay)
         return self
+
+    def schedule(self):
+
+        now = time.time()
+        if self.when < now:
+            self.when = now
+
+        return self
+
+    def add(self, mask, shift, value, delay = 0):
+
+        self.schedule()
+        self.queue.put((self.when, mask, value << shift))
+        self.delay(delay)
+
+        return self
+        
 
     # Private worker thread, not part of the api           
     def worker(self, queue):
