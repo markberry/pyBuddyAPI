@@ -1,19 +1,58 @@
+"""
+USBAPI - a simple API for driving the USB attached iBuddy
+
+USAGE
+
+To use this you need to add pywinusb to your Python installation
+- https://pypi.python.org/pypi/pywinusb/
+
+Then you can drive this from the Python console as follows:
+
+>>> import usbapi as usb
+>>> devices = usb.usbapi().getDevices()
+
+That gets you an array of iBuddy devices.
+
+If you are in the lucky position of having multiple iBuddy devices attached, then you probably want to first do:
+
+>>> devices.identify()
+
+which will make the devices identify themselves in order, so that you can make their physical order match their logical order, either by physically moving them, or by using
+
+>>> devices = devices.reorder([3, 1, 4, 2])
+
+(Note that reorder takes the devices as being numbered from 1 not the normal Python convention of zero).
+
+You can then give all devices commands as follows:
+
+>>> devices.color("red")
+>>> devices.color("green")
+>>> devices.fly()
+
+Actions can be strung together thus
+
+>>> devices.color("red").delay().color("green").delay().color("blue")
+
+All actions get queued up, and you may need to add specific delay calls between actions, so that you see all three colors above, not just the last one issued.
+
+Of course you can issue different commands to different devices
+
+>>> devices[0].color("white")
+>>> devices[1].color("cyan")
+
+If you want to execute a sequence, then the play command makes it easy, with its single character based command language:
+
+>>> devices.play("rgbdpzcymn", 0.5)
+
+which will run through the colors red, green, and blue, then do a dance, pulse the heart, create a buzz, and then try the other colors cyan, yellow, magenta, before ending up with the "nothing" color.
+
+There's plenty more to the api - but I'm afraid the code is the docS.  Happy hunting!
+"""
+
 import pywinusb.hid as hid
 import time
 import Queue
 import threading
-
-"""
-TODO
-- make the instant set actions maybe add to the end of the queue
-- add a delay action
-- add an alarm action for a set time
-- chase actions from one device to the next
-- allow devices to be reordered, AND that order saved to disk for reuse next time
-- allow for infinite sequences by having callback defined ones as well as queue driven ones
-
-- work with APIs other than pywinusb
-"""
 
 
 # Constants for use in the api
@@ -70,7 +109,7 @@ class UsbDevices(list, Constants):
             device.wait()
             
         for device in self:
-            device.dance().wait()
+            device.heart(device.show).dance().wait().heart(device.hide)
             
     def reorder(self, sequence):
         reordered = UsbDevices()
@@ -135,9 +174,9 @@ class UsbDevices(list, Constants):
             device.fly(number, delay)
         return self
 
-    def buzz(self, number = 30, delay = 0.02):
+    def buzz(self, number = 30, delay = 0.02, rise = 0):
         for device in self:
-            device.buzz(number, delay)
+            device.buzz(number, delay, rise)
         return self
 
     def pulse(self, number = 30, delay = 0.1):
@@ -165,7 +204,7 @@ class UsbDevices(list, Constants):
             device.discard()
         return self
 
-    def delay(self, delay):
+    def delay(self, delay = 1):
         for device in self:
             device.delay(delay)
         return self
@@ -214,6 +253,14 @@ class UsbDevices(list, Constants):
             elif c == '+':
                 # this gives no delay, so makes two actions happen at once
                 continue
+            elif c == '/':
+                # halve the delay
+                delay = delay / 2.0
+                continue
+            elif c == '*':
+                # double the delay
+                delay = delay * 2.0
+                continue
 
             self.delay(delay)
 
@@ -257,7 +304,7 @@ class usbdevice(Constants):
 
         # we pick a preferred move
         self.move = 1
-			
+            
         self.queue = Queue.PriorityQueue()
             
         self.queue.device = self
@@ -304,9 +351,9 @@ class usbdevice(Constants):
         try:
             self.lock.acquire()
             self.device.open()
-	
+    
             reports = self.device.find_output_reports()
-	
+    
             out_report = reports[0]
     
             data = (0x00, 0x55, 0x53, 0x42, 0x43, 0x00, 0x40, 0x02, value)
@@ -327,7 +374,7 @@ class usbdevice(Constants):
         """Set the color of the main indicator"""
 
         if isinstance(color, basestring):
-            # If color is passed as a string, we take its initial color as
+            # If color is passed as a string, we take its initial letter as
             # defining the color we want
             color = self.colorInitials.find(color[0])
 
@@ -371,7 +418,7 @@ class usbdevice(Constants):
         self.add(self.flapMask, self.flapShift, self.neutral)
         return self
 
-    def buzz(self, number = 30, delay = 0.02):
+    def buzz(self, number = 30, delay = 0.02, rise = 0):
         """Make a buzzing sound"""
         # We try and not disturb the turn by turning back to the last move
         turn = self.move
@@ -380,6 +427,7 @@ class usbdevice(Constants):
             self.add(self.turnMask, self.turnShift, turn)
             self.add(self.turnMask, self.turnShift, turn  ^ 3, delay)
             self.add(self.turnMask, self.turnShift, self.neutral, delay)
+            delay += rise
         return self
 
     def pulse(self, number = 30, delay = 0.1):
@@ -430,6 +478,15 @@ class usbdevice(Constants):
 
         return self
 
+    def mix(self, color1 = 6, color2 = 4, number = 1000):
+        """Mix two colors together, to try and create an intermediate one - doesn't work very well"""
+        for each in range(number):
+            self.output(value = color1 << self.colorShift)
+            self.output(value = color2 << self.colorShift)
+
+        return self        
+
+
     # Internal helper actions    
     def sequence(self, number, delay, mask, shift, on = 0, off = 1):
         """Helper function"""
@@ -453,7 +510,7 @@ class usbdevice(Constants):
         self.delay(delay)
 
         return self
-        
+
 
     # Private worker thread, not part of the api           
     def worker(self, queue):
@@ -467,3 +524,4 @@ class usbdevice(Constants):
             self.value = (self.value & mask) + value
             self.output()
             queue.task_done()
+
